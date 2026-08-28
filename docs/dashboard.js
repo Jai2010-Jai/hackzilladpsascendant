@@ -634,6 +634,256 @@ function showPlaceBrief(brief, error) {
   paintInsights(brief);
 }
 
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_CONFIG_URL = "https://gist.githubusercontent.com/Jai2010-Jai/fd2eda70d0304b5cedf2ce033af5f92e/raw/sonitus-groq.json";
+let groqKey = String(window.GROQ_API_KEY || "").trim();
+const GROQ_MODELS = [
+  String(window.GROQ_MODEL || "").trim(),
+  "llama-3.1-8b-instant",
+  "llama-3.3-70b-versatile",
+].filter(Boolean);
+
+async function ensureGroqKey() {
+  if (groqKey) return groqKey;
+  const res = await fetch(`${GROQ_CONFIG_URL}?t=${Date.now()}`);
+  if (!res.ok) throw new Error("Could not load Groq config");
+  const cfg = await res.json();
+  groqKey = String(cfg.key || cfg.GROQ_API_KEY || "").trim();
+  if (cfg.model) GROQ_MODELS.unshift(String(cfg.model));
+  if (!groqKey) throw new Error("GROQ_API_KEY is not set");
+  return groqKey;
+}
+
+function groqExtractJson(text) {
+  const raw = String(text || "").trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const blob = (fenced ? fenced[1] : raw).trim();
+  try {
+    return JSON.parse(blob);
+  } catch (err) {
+    const match = blob.match(/\{[\s\S]*\}/);
+    if (!match) throw err;
+    return JSON.parse(match[0]);
+  }
+}
+
+async function groqRequest(messages, maxTokens) {
+  const key = await ensureGroqKey();
+  let last = new Error("Groq failed");
+  const unique = [...new Set(GROQ_MODELS)];
+  for (const model of unique) {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_tokens: maxTokens,
+        messages,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      last = new Error((body.error && body.error.message) || `Groq failed (${res.status})`);
+      continue;
+    }
+    const text = body.choices && body.choices[0] && body.choices[0].message
+      ? String(body.choices[0].message.content || "").trim()
+      : "";
+    if (!text) {
+      last = new Error("Groq returned an empty reply");
+      continue;
+    }
+    return { text, model, usage: body.usage || {} };
+  }
+  throw last;
+}
+
+function hourlyMeans(readings) {
+  const buckets = new Map();
+  readings.forEach((row) => {
+    const laeq = row.value != null ? row.value : row.laeq;
+    if (laeq == null) return;
+    const local = new Date(row.timestamp);
+    if (Number.isNaN(local.getTime())) return;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Dublin",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(local);
+    const get = (type) => parts.find((p) => p.type === type).value;
+    const key = `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:00`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(Number(laeq));
+  });
+  return [...buckets.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([hour, vals]) => ({
+      hour,
+      mean_db: Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10,
+      max_db: Math.round(Math.max(...vals) * 10) / 10,
+      samples: vals.length,
+    }));
+}
+
+function hourNum(hourKey) {
+  try {
+    return Number(String(hourKey).split(" ")[1].slice(0, 2));
+  } catch (err) {
+    return null;
+  }
+}
+
+function placeFacts(hours, stats) {
+  const ranked = hours.slice().sort((a, b) => a.mean_db - b.mean_db);
+  const quiet = ranked[0];
+  const loud = ranked[ranked.length - 1];
+  const partsDef = [
+    ["Morning", "6am–noon", [6, 7, 8, 9, 10, 11]],
+    ["Afternoon", "noon–6pm", [12, 13, 14, 15, 16, 17]],
+    ["Evening", "6pm–10pm", [18, 19, 20, 21]],
+    ["Night", "10pm–6am", [22, 23, 0, 1, 2, 3, 4, 5]],
+  ];
+  const parts = partsDef
+    .map(([label, window, hoursSet]) => {
+      const vals = hours.filter((h) => hoursSet.includes(hourNum(h.hour))).map((h) => h.mean_db);
+      if (!vals.length) return null;
+      return {
+        label,
+        window,
+        mean_db: Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10,
+        hours: vals.length,
+      };
+    })
+    .filter(Boolean);
+  const high = Boolean(
+    loud.mean_db >= 65 ||
+      (stats && stats.mean != null && Number(stats.mean) >= 65) ||
+      (stats && stats.max != null && Number(stats.max) >= 80)
+  );
+  return {
+    loudest_hour: loud.hour,
+    loudest_db: loud.mean_db,
+    quietest_hour: quiet.hour,
+    quietest_db: quiet.mean_db,
+    swing_db: Math.round((loud.mean_db - quiet.mean_db) * 10) / 10,
+    day_mean: stats && stats.mean,
+    day_min: stats && stats.min,
+    day_max: stats && stats.max,
+    hours_used: hours.length,
+    parts,
+    top_loud: ranked.slice(-3).reverse(),
+    top_quiet: ranked.slice(0, 3),
+    high_volume: high,
+  };
+}
+
+async function groqPlaceBrief(payload) {
+  const hours = hourlyMeans(payload.readings || []);
+  if (!hours.length) throw new Error("Could not group this place into hours");
+  const facts = placeFacts(hours, payload.stats);
+  const grounded = {
+    place: payload.location,
+    dates: { from: payload.start, to: payload.end },
+    clock: "Europe/Dublin",
+    metric: payload.metric_label || "reading",
+    kind: payload.kind,
+    unit: payload.unit || "as reported",
+    facts,
+    by_hour: hours,
+  };
+  const system =
+    "You help someone visiting one Dublin place. Plain English. " +
+    "Do not mention map colours, colour bands, LAeq, or legal limits. " +
+    "Say 'average noise' and 'decibels'. Only use hours in the JSON. Do not invent times. " +
+    "Reply JSON only with: summary, loudest, go_when, avoid, expect, tips (array of 3), " +
+    "mitigation (array of 4 if facts.high_volume is true, else empty array).";
+  const { text, model, usage } = await groqRequest(
+    [
+      { role: "system", content: system },
+      { role: "user", content: JSON.stringify(grounded) },
+    ],
+    900
+  );
+  const parsed = groqExtractJson(text);
+  const tips = Array.isArray(parsed.tips) ? parsed.tips.map((t) => String(t).trim()).filter(Boolean).slice(0, 4) : [];
+  let mitigation = Array.isArray(parsed.mitigation)
+    ? parsed.mitigation.map((t) => String(t).trim()).filter(Boolean).slice(0, 5)
+    : [];
+  if (facts.high_volume && !mitigation.length) {
+    mitigation = [
+      `Move the visit toward ${facts.quietest_hour} if you can.`,
+      `Avoid lingering around ${facts.loudest_hour}.`,
+      "Keep the stop short, and stand back from the kerb if you’re outdoors.",
+      "Ear protection helps more than waiting it out.",
+    ];
+  }
+  if (!facts.high_volume) mitigation = [];
+  const summary = String(parsed.summary || "").trim();
+  const loudest = String(parsed.loudest || "").trim();
+  const goWhen = String(parsed.go_when || "").trim();
+  if (!summary || !loudest || !goWhen) throw new Error("Groq returned an incomplete place summary");
+  return {
+    model,
+    place: payload.location,
+    start: payload.start,
+    end: payload.end,
+    facts,
+    summary,
+    loudest,
+    go_when: goWhen,
+    avoid: String(parsed.avoid || "").trim(),
+    expect: String(parsed.expect || "").trim(),
+    tips,
+    mitigation,
+    high_volume: facts.high_volume,
+    usage,
+  };
+}
+
+async function groqNoiseChat(question, stations, history, selected) {
+  const q = String(question || "").trim().slice(0, 400);
+  if (q.length < 2) throw new Error("Ask a short question about a Dublin place.");
+  const slim = (stations || [])
+    .filter((row) => row.location)
+    .slice(0, 24)
+    .map((row) => ({
+      location: row.location,
+      mean_db: row.mean,
+      min_db: row.min,
+      max_db: row.max,
+    }));
+  const turns = [];
+  (history || []).slice(-8).forEach((item) => {
+    if ((item.role === "user" || item.role === "assistant") && item.content) {
+      turns.push({ role: item.role, content: String(item.content).slice(0, 800) });
+    }
+  });
+  const system =
+    "You help someone visiting Dublin decide how loud a place usually is, and whether they should go. " +
+    "Plain English. Short answers. Use only the station list and selected_place in the JSON. " +
+    "If they name a place that is not in the list, say you have no monitor there. " +
+    "Say 'decibels', not LAeq. Do not invent times, other cities, or legal limits. " +
+    "If they ask should I go: give a clear take (go / go but keep it short / skip if you want quiet). " +
+    "This is a usual pattern, not tomorrow’s exact sound. Reply as chat text, not JSON.";
+  const user = `${q}\n\nContext JSON:\n${JSON.stringify({
+    clock: "Europe/Dublin",
+    stations: slim,
+    selected_place: selected,
+  })}`;
+  const { text, model, usage } = await groqRequest(
+    [{ role: "system", content: system }, ...turns, { role: "user", content: user }],
+    450
+  );
+  return { reply: text, model, usage };
+}
+
 async function summarisePlace(data, allowRetry = true) {
   const serial = data.monitor && data.monitor.serial_number;
   showPlaceBrief(null);
@@ -641,28 +891,35 @@ async function summarisePlace(data, allowRetry = true) {
     .filter((r) => (r.value != null || r.laeq != null) && r.timestamp)
     .map((r) => ({ timestamp: r.timestamp, value: r.value != null ? r.value : r.laeq, laeq: r.value != null ? r.value : r.laeq }));
   try {
-    const res = await fetch(apiUrl("/api/ai/place"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        location: data.monitor.location,
-        start: data.start,
-        end: data.end,
-        stats: data.stats,
-        kind: data.kind,
-        metric_label: data.metric_label,
-        unit: data.unit,
-        readings: slim,
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (res.status === 429 && allowRetry) {
-      showPlaceBrief(null, "AI is rate-limited. Open this page again in a moment.");
-      return;
-    }
-    if (!res.ok) {
-      const detail = typeof body.detail === "string" ? body.detail : `AI failed (${res.status})`;
-      throw new Error(detail);
+    const payload = {
+      location: data.monitor.location,
+      start: data.start,
+      end: data.end,
+      stats: data.stats,
+      kind: data.kind,
+      metric_label: data.metric_label,
+      unit: data.unit,
+      readings: slim,
+    };
+    let body;
+    try {
+      body = await groqPlaceBrief(payload);
+    } catch (directErr) {
+      if (!API_BASE) throw directErr;
+      const res = await fetch(apiUrl("/api/ai/place"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 429 && allowRetry) {
+        showPlaceBrief(null, "AI is rate-limited. Open this page again in a moment.");
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(typeof json.detail === "string" ? json.detail : `AI failed (${res.status})`);
+      }
+      body = json;
     }
     lastPlaceBrief = body;
     briefSerial = serial;
@@ -1570,19 +1827,26 @@ async function sendChat(raw) {
         }
       : null;
   try {
-    const res = await fetch(apiUrl("/api/ai/chat"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: q,
-        history: chatHistory.slice(0, -1),
-        stations: chatStations(),
-        selected,
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(typeof body.detail === "string" ? body.detail : `Ask failed (${res.status})`);
+    let body;
+    try {
+      body = await groqNoiseChat(q, chatStations(), chatHistory.slice(0, -1), selected);
+    } catch (directErr) {
+      if (!API_BASE) throw directErr;
+      const res = await fetch(apiUrl("/api/ai/chat"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: q,
+          history: chatHistory.slice(0, -1),
+          stations: chatStations(),
+          selected,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof json.detail === "string" ? json.detail : `Ask failed (${res.status})`);
+      }
+      body = json;
     }
     const reply = body.reply || "I couldn’t form an answer.";
     appendChat("assistant", reply);

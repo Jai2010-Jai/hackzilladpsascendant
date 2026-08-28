@@ -13,7 +13,7 @@ export default function RootLayout({ children }) {
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `window.SONITUS_API = ${JSON.stringify(apiBase)};window.SONITUS_BASE = ${JSON.stringify(siteBase)};`,
+            __html: `window.SONITUS_API = ${JSON.stringify(apiBase)};window.SONITUS_BASE = ${JSON.stringify(siteBase)};window.GROQ_API_KEY = ${JSON.stringify(process.env.NEXT_PUBLIC_GROQ_API_KEY || "")};window.GROQ_MODEL = ${JSON.stringify(process.env.NEXT_PUBLIC_GROQ_MODEL || "llama-3.1-8b-instant")};`,
           }}
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
