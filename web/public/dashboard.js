@@ -144,8 +144,10 @@ function dublinTomorrowAt(hour, minute) {
 async function fetchJson(url, tries = 1) {
   let last = new Error("Request failed");
   for (let attempt = 0; attempt < tries; attempt += 1) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3500);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: ctrl.signal });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         const detail = body.detail;
@@ -153,10 +155,12 @@ async function fetchJson(url, tries = 1) {
       }
       return body;
     } catch (err) {
-      last = err;
+      last = err.name === "AbortError" ? new Error("Request timed out") : err;
       if (attempt < tries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw last;

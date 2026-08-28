@@ -3,7 +3,8 @@ export const metadata = {
   description: "Dublin noise intelligence from Sonitus monitors.",
 };
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+const apiBase =
+  process.env.GITHUB_PAGES === "true" ? "" : process.env.NEXT_PUBLIC_API_BASE || "";
 const siteBase = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
 export default function RootLayout({ children }) {
