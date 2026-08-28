@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: hackzilla
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    envVars:
+      - key: SONITUS_USERNAME
+        value: dublincityapi
+      - key: SONITUS_PASSWORD
+        value: Xpa5vAQ9ki
+      - key: SONITUS_BASE_URL
+        value: https://data.smartdublin.ie/sonitus-api
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true

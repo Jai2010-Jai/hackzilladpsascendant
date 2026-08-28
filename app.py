@@ -543,6 +543,11 @@ def calendar_analyze(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return {"results": results, "notices": [n for n in notices if n]}
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"ok": "true"}
+
+
 def _dashboard_page() -> FileResponse:
     return FileResponse(ROOT / "index.html", headers={"Cache-Control": "no-store"})
 
