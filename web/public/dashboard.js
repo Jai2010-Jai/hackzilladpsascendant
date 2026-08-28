@@ -647,7 +647,7 @@ async function ensureGroqKey() {
   if (groqKey) return groqKey;
   const res = await fetch(`${GROQ_CONFIG_URL}?t=${Date.now()}`);
   if (!res.ok) throw new Error("Could not load Groq config");
-  const cfg = await res.json();
+  const cfg = JSON.parse(await res.text());
   groqKey = String(cfg.key || cfg.GROQ_API_KEY || "").trim();
   if (cfg.model) GROQ_MODELS.unshift(String(cfg.model));
   if (!groqKey) throw new Error("GROQ_API_KEY is not set");
