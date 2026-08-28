@@ -263,7 +263,7 @@ export default function Page() {
     </div>
   </div>
       <Script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" strategy="beforeInteractive" />
-      <Script src="/dashboard.js" strategy="afterInteractive" />
+      <Script src={withBase("/dashboard.js")} strategy="afterInteractive" />
     </>
   );
 }

@@ -1,4 +1,9 @@
 const API_BASE = String(window.SONITUS_API || "").replace(/\/$/, "");
+const SITE_BASE = String(window.SONITUS_BASE || "").replace(/\/$/, "");
+
+function assetUrl(path) {
+  return `${SITE_BASE}${path}`;
+}
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
@@ -687,7 +692,16 @@ async function requestPlaceInsights() {
 }
 
 async function loadMonitors() {
-  const data = await fetchJson(apiUrl("/api/monitors"), 1);
+  let data;
+  try {
+    data = API_BASE ? await fetchJson(apiUrl("/api/monitors"), 1) : null;
+  } catch (err) {
+    data = null;
+    setStatus(err.message || "Live API unreachable, using saved stations.");
+  }
+  if (!data || !Array.isArray(data.monitors) || !data.monitors.length) {
+    data = await fetchJson(assetUrl("/api/monitors.json"), 2);
+  }
   allStations = data.monitors.map((m) => ({ ...m, stats: typicalStatsFor(m) }));
   refreshView();
   renderPlaceChips();

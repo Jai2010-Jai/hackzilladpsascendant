@@ -4,6 +4,7 @@ export const metadata = {
 };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE || "";
+const siteBase = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
 export default function RootLayout({ children }) {
   return (
@@ -11,7 +12,7 @@ export default function RootLayout({ children }) {
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `window.SONITUS_API = ${JSON.stringify(apiBase)};`,
+            __html: `window.SONITUS_API = ${JSON.stringify(apiBase)};window.SONITUS_BASE = ${JSON.stringify(siteBase)};`,
           }}
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
